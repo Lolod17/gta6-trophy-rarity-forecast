@@ -109,13 +109,27 @@ not need.
 ## The rich path
 
 Everything else — the final, in particular — goes through the structural model described above,
-with one further guard: the structural median moves only `STRUCT_BLEND = 0.5` of the way from
-the last observed rate in logit space. Two days of history is thin evidence for a 4.5-day
-extrapolation, so persistence stays the anchor and the structural estimate supplies the
-adjustment. On synthetic checks calibrated to the real day-2 cross-section that blend cut the
-mean pinball loss from 0.451 to 0.415, and it keeps the model within reach of the persistence
-baseline in the worlds where rates barely move, while still carrying the story ladder where
-they do.
+with two further guards.
+
+`STRUCT_BLEND = 0.75`: the structural median moves three quarters of the way from the last
+observed rate, in logit space. Persistence stays the backstop for a trophy whose earners grew
+early and then stalled, but the model no longer pays the full cost of ignoring a move the data
+supports.
+
+**Sparse histories.** With fewer than three refresh states a per-trophy elasticity cannot be
+estimated, so `gamma = 1` would assert "no dilution" for all 55 trophies at once — which one
+pool re-base refutes. In that regime the earner-time estimator (which needs no elasticity) is
+used alone instead of being averaged with an elasticity that carries no information.
+
+Both guards were measured on the only two real transitions that exist: the launch refresh
+(638 -> 3,868 players, 90 minutes) and the re-base to 36,080 players (27.7 hours, 55 trophies).
+Against the second, the current model scores a pinball loss of **1.2040**, a median miss of
+**0.422 points** and **42%** 90% coverage, versus **1.3363 / 0.439 / 20%** for the previous
+settings and **1.721** for the persistence baseline. It wins on 45 of 55 trophies, and a
+bootstrap over trophies puts the mean gain's 5th percentile at +0.10. The synthetic checks move
+from 0.390 to 0.393 — flat, as they should be: they are a sanity check, not a decision input.
+The practice cases are untouched (0.000239, coverage 1.000), because the frozen branch answers
+them before the structural model runs.
 
 ## Run
 

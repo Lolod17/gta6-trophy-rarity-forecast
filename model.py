@@ -15,7 +15,7 @@ CONFIG = {
     "MIN_RATE": 0.01,
     "MAX_FACTOR": 8.0,
     "GAMMA_DAMP": 0.5,
-    "STRUCT_BLEND": 0.5,
+    "STRUCT_BLEND": 0.75,
     "GAMMA_SIGMA": 0.30,
     "P_SIGMA": 0.25,
     "STALE_WIDEN": 1.6,
@@ -419,12 +419,21 @@ def forecast_with_diagnostics(case):
             b_eff = min(max(b_slope, 0.0), CONFIG["EARNER_DAMP_CAP"]) * CONFIG["EARNER_DAMP"]
             if t_ratio > 0.0 and p_target > 0.0:
                 earner_med = r_now * (t_ratio ** b_eff) * (p_now / p_target)
-                elasticity_med = math.sqrt(max(elasticity_med, 0.0) * max(earner_med, 0.0))
+                if sparse_gamma:
+                    # Under three refresh states a per-trophy elasticity is not
+                    # estimable, so gamma = 1 asserts "no dilution" for every
+                    # trophy at once — which one pool re-base refutes. The
+                    # earner-time estimator needs no elasticity and is the only
+                    # one identified here, so it is used alone.
+                    elasticity_med = earner_med
+                else:
+                    elasticity_med = math.sqrt(max(elasticity_med, 0.0) * max(earner_med, 0.0))
 
-        # The two-day evidence behind a structural move is noisy, so the median
-        # moves only part of the way from the last observed rate. A blend of 0.5
-        # in logit space halves the variance of the structural estimate and keeps
-        # persistence as the anchor when the evidence is thin.
+        # The evidence behind a structural move is noisy, so the median moves
+        # only part of the way from the last observed rate. Three quarters keeps
+        # persistence as the backstop against a trophy whose earners grew early
+        # and then stalled, without paying the full cost of ignoring a move that
+        # the data does support.
         if family != "always" and not stale_shape and r_now > 0.0 and elasticity_med > 0.0:
             anchor = _logit_percent(r_now)
             moved = _logit_percent(elasticity_med)
