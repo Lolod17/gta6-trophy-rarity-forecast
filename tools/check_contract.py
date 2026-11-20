@@ -11,6 +11,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN = ROOT / "main.py"
+sys.path.insert(0, str(ROOT))
+
+import model
 
 
 def trophies(count):
@@ -72,6 +75,30 @@ def synthetic_cases():
                                read("2026-11-19T06:00:00Z", 2000, [6.0, 0.9, 0.02]),
                                read("2026-11-19T19:20:00Z", 9000, [4.0, 0.8, 0.04]),
                            ]))
+    story_rates = [0.0, 100.0, 7.99, 0.90, 0.02, 0.02, 0.02, 2.52,
+                   0.02, 0.02, 0.02, 0.02, 0.02, 0.0]
+    story = make_case("story-rungs", "2026-11-20T08:00:00Z", "2026-11-20T08:15:00Z",
+                       story_rates, [
+                           read("2026-11-20T06:00:00Z", 30000,
+                                [0.0, 100.0, 8.1, 0.95, 0.01, 0.01, 0.01, 2.52,
+                                 0.01, 0.01, 0.01, 0.01, 0.01, 0.0]),
+                           read("2026-11-20T07:00:00Z", 35000,
+                                [0.0, 100.0, 7.99, 0.90, 0.01, 0.01, 0.01, 2.52,
+                                 0.01, 0.01, 0.01, 0.01, 0.01, 0.0]),
+                           read("2026-11-20T07:30:00Z", 35500,
+                                [0.0, 100.0, 7.99, 0.90, 0.01, 0.01, 0.01, 2.52,
+                                 0.01, 0.01, 0.01, 0.01, 0.01, 0.0]),
+                           read("2026-11-20T08:00:00Z", 36080, story_rates),
+                       ], horizon=15)
+    for trophy, description in zip(story["trophies"], [
+            "Congratulations! You're a Leonida Legend.", "Complete Gone Fishing.",
+            "Complete Chapter 1.", "Complete Chapter 2.", "Complete Chapter 3.",
+            "Complete Chapter 4.", "Complete the final mission.", "Complete Breakfast Run.",
+            "Complete The Cartel Heist.", "Complete Child's Play.", "Complete Headliners.",
+            "Complete VCIA Takedown.", "Complete Operation Savage Glory.",
+            "Attain 100% Completion."]):
+        trophy["description"] = description
+    cases.append(story)
     many_rates = [100.0 if index == 1 else (2.5 if index == 2 else 0.0) for index in range(55)]
     cases.append(make_case("fifty-five", "2026-11-20T00:00:00Z", "2026-11-20T02:00:00Z",
                            many_rates, [read("2026-11-19T20:00:00Z", 10000, many_rates)], 55))
@@ -99,6 +126,7 @@ def validate_output(path, case):
         assert all(isinstance(value, (int, float)) and math.isfinite(value)
                    and 0.0 <= value <= 100.0 for value in row["q"]), "invalid quantile"
         assert row["q"] == sorted(row["q"]), "quantiles are not monotone"
+        assert row["q"][2] >= 0.01, "median fell below 0.01%"
 
 
 def main():
@@ -122,7 +150,37 @@ def main():
             second = second_dir / (case["id"] + ".out")
             validate_output(first, case)
             assert first.read_bytes() == second.read_bytes(), "output changed between runs"
-    print("PASS: %d synthetic cases; valid, monotone, finite, deterministic output" % len(cases))
+    story_case = next(case for case in cases if case["id"] == "story-rungs")
+    story_details = model.forecast_with_diagnostics(story_case)
+    story_rates = story_case["history"][-1]["rates"]
+    details_by_id = {trophy["id"]: detail for trophy, detail
+                     in zip(story_case["trophies"], story_details)}
+    rates_by_id = {trophy["id"]: rate for trophy, rate
+                   in zip(story_case["trophies"], story_rates)}
+    ladder_ids = [story_case["trophies"][index]["id"]
+                  for index in model._story_ladder(story_case["trophies"])]
+    assert ladder_ids == list(range(1, 15)), "story membership missed an ID or described rung"
+    for trophy_id, band in ((3, "early"), (4, "mid"), (8, "early")):
+        rate = rates_by_id[trophy_id]
+        median = details_by_id[trophy_id]["median"]
+        assert 0.9 * rate <= median <= 1.1 * rate, \
+            "healthy story/side rung %d moved too far from its observed rate" % trophy_id
+        assert details_by_id[trophy_id]["sigma"] < 0.6
+    assert details_by_id[5]["lagging_story"], "Chapter 3 was not detected as lagging"
+    assert all(details_by_id[trophy_id]["hedged_story"]
+               and details_by_id[trophy_id]["sigma"] >= model.CONFIG["LAGGING_STORY_SIGMA"]
+               for trophy_id in (5, 6, 7, 9, 10, 11, 12, 13, 1, 14)), \
+        "a ladder rung at/below the frontier did not receive sigma 1.40"
+    assert all(details_by_id[trophy_id]["median"] > rates_by_id[trophy_id]
+               for trophy_id in (6, 7, 9, 10, 11, 12, 13)), \
+        "the hedged frontier's deeper rate-tied rungs did not rise in this test case"
+    assert details_by_id[1]["median"] >= model.CONFIG["MIN_RATE"]
+    assert all(detail["parent_id"] is None
+               or detail["median"] <= details_by_id[detail["parent_id"]]["median"]
+               for detail in details_by_id.values()), \
+        "a ladder median exceeded its rate-ordered parent's median"
+    print("PASS: %d synthetic cases; valid, monotone, finite, deterministic output; "
+          "real-shape lag frontier and full hedge chain verified" % len(cases))
 
 
 if __name__ == "__main__":

@@ -8,19 +8,24 @@ CONFIG = {
     "RECENT_P": 6,
     "RECENT_G": 6,
     "DAMP": 0.75,
-    "CAP_GROWTH": 6.0,
-    "MIN_RATE": 0.004,
-    "PARENT_FLOOR_SHARE": 0.35,
+    "CAP_GROWTH": 5.0,
+    "MIN_RATE": 0.01,
+    "MAX_FACTOR": 8.0,
+    "GAMMA_DAMP": 0.5,
     "GAMMA_SIGMA": 0.30,
     "P_SIGMA": 0.25,
     "STALE_WIDEN": 1.6,
     "FAMILY_SIGMA": {
         "always": 0.02,
-        "early": 0.45,
-        "mid": 0.40,
-        "late": 0.55,
-        "grind": 0.60,
+        "early": 0.35,
+        "mid": 0.45,
+        "late": 0.70,
+        "grind": 0.80,
     },
+    "LAGGING_STORY_SIGMA": 1.40,
+    "STORY_RUNG_RATIO_MIN": 0.05,
+    "STORY_RUNG_RATIO_MAX": 0.60,
+    "STORY_DEEP_RATIO": 0.60,
     "Z": (-1.645, -0.674, 0.0, 0.674, 1.645),
 }
 
@@ -221,43 +226,55 @@ def _gamma_estimates(states, families):
     return result, medians
 
 
-def _story_parent(index, trophies, current_rates):
-    if current_rates[index] is None:
-        return None
+def _trophy_id(trophy):
     try:
-        trophy_id = int(trophies[index].get("id"))
+        return int(trophy.get("id"))
     except (TypeError, ValueError, AttributeError):
         return None
-    if trophy_id < 1 or trophy_id > 13:
-        return None
-    candidates = []
-    for other_index, trophy in enumerate(trophies):
-        try:
-            other_id = int(trophy.get("id"))
-        except (TypeError, ValueError, AttributeError):
+
+
+def _description_is_story_rung(trophy):
+    description = trophy.get("description", "") if isinstance(trophy, dict) else ""
+    description = str(description).lower()
+    return ("chapter" in description or "final mission" in description
+            or "100% completion" in description or "gone fishing" in description)
+
+
+def _story_ladder(trophies):
+    """Return the union of story IDs and described rungs in case order."""
+    members = set()
+    for index, trophy in enumerate(trophies):
+        if _description_is_story_rung(trophy):
+            members.add(index)
+        trophy_id = _trophy_id(trophy)
+        if trophy_id is not None and 1 <= trophy_id <= 13:
+            members.add(index)
+    return [index for index in range(len(trophies)) if index in members]
+
+
+def _story_rung_ratio(trophies, current_rates):
+    """Estimate rung spacing from named campaign milestones in case order."""
+    story_indices = [index for index, trophy in enumerate(trophies)
+                     if _description_is_story_rung(trophy)]
+    ratios = []
+    for position in range(1, len(story_indices)):
+        parent_rate = current_rates[story_indices[position - 1]]
+        child_rate = current_rates[story_indices[position]]
+        if parent_rate is None or child_rate is None or parent_rate < 1.0:
             continue
-        rate = current_rates[other_index]
-        if 1 <= other_id < trophy_id <= 13 and rate is not None and rate > current_rates[index]:
-            candidates.append((other_id, other_index))
-    if not candidates:
-        return None
-    return max(candidates)[1]
+        ratio = max(0.0, child_rate) / parent_rate
+        ratios.append(ratio)
+    if not ratios:
+        return 0.10
+    return min(CONFIG["STORY_RUNG_RATIO_MAX"],
+               max(CONFIG["STORY_RUNG_RATIO_MIN"], _median(ratios)))
 
 
-def _parent_flow(states, parent_index):
-    observations = []
-    for state in states:
-        rate = state["rates"][parent_index]
-        earned = _earners(rate, state["P"])
-        if earned is not None:
-            observations.append((state["t"], earned))
-    if len(observations) < 2:
-        return 0.0, observations[-1][1] if observations else 0
-    elapsed = observations[-1][0] - observations[0][0]
-    if elapsed <= 0.0:
-        return 0.0, observations[-1][1]
-    flow = max(0.0, (observations[-1][1] - observations[0][1]) / elapsed)
-    return flow, observations[-1][1]
+def _clamp_median(rate_med, r_now):
+    reference_rate = max(CONFIG["MIN_RATE"], r_now)
+    lower = reference_rate / CONFIG["MAX_FACTOR"]
+    upper = reference_rate * CONFIG["MAX_FACTOR"]
+    return min(upper, max(lower, rate_med))
 
 
 def _quantiles(rate_med, sigma, family):
@@ -268,14 +285,16 @@ def _quantiles(rate_med, sigma, family):
     return [_sigmoid_percent(center + z * sigma) for z in CONFIG["Z"]]
 
 
-def forecast(case):
-    """Return one five-quantile percent-rate row for each trophy in ``case``."""
+def forecast_with_diagnostics(case):
+    """Return per-trophy forecast details, including median, sigma, and family."""
     trophies = case.get("trophies", []) if isinstance(case, dict) else []
     if not isinstance(trophies, list):
         trophies = []
     states = _build_states(case if isinstance(case, dict) else {})
     if not states:
-        return [[0.01] * 5 for _trophy in trophies]
+        return [{"q": [0.01] * 5, "median": 0.01, "sigma": 0.0,
+                 "family": "grind", "lagging_story": False}
+                for _trophy in trophies]
 
     last_state = states[-1]
     observations = [_trophy_observations(states, index) for index in range(len(trophies))]
@@ -283,16 +302,6 @@ def forecast(case):
     families = [_family(rate) for rate in current_rates]
     p_now, p_target = _pool_forecast(states, case.get("at"), case.get("target"))
     pool_ratio = max(1.0, p_target / max(p_now, 1.0))
-
-    try:
-        horizon_hours = max(0.0, _finite_number(case.get("horizon_minutes"), 0.0) / 60.0)
-    except AttributeError:
-        horizon_hours = 0.0
-    if horizon_hours <= 0.0:
-        try:
-            horizon_hours = max(0.0, (_parse_time(case["target"]) - _parse_time(case["at"])).total_seconds() / 3600.0)
-        except (KeyError, TypeError, ValueError, OverflowError):
-            horizon_hours = 0.0
 
     gammas, family_medians = _gamma_estimates(states, families)
     raw_history = case.get("history", [])
@@ -305,17 +314,49 @@ def forecast(case):
     )
     single_state = len(states) == 1
     sparse_gamma = len(states) < 3
-    results = []
+    ladder_indices = _story_ladder(trophies)
+    rung_ratio = _story_rung_ratio(trophies, current_rates)
 
-    for index, family in enumerate(families):
+    def ladder_rate(index):
+        rate = current_rates[index]
+        return rate if rate is not None else 0.0
+
+    rate_order = sorted(
+        ladder_indices,
+        key=lambda index: (
+            -ladder_rate(index),
+            _trophy_id(trophies[index]) if _trophy_id(trophies[index]) is not None else index,
+            index,
+        ),
+    )
+    rate_groups = []
+    for index in rate_order:
+        rate = ladder_rate(index)
+        if not rate_groups or rate_groups[-1][0] != rate:
+            rate_groups.append((rate, [index]))
+        else:
+            rate_groups[-1][1].append(index)
+
+    rate_metadata = {}
+    ordered_ladder = []
+    for group_position, (_rate, group) in enumerate(rate_groups):
+        parent_index = rate_groups[group_position - 1][1][-1] if group_position else None
+        for depth, index in enumerate(group):
+            rate_metadata[index] = (parent_index, depth)
+            ordered_ladder.append(index)
+
+    details = [None] * len(trophies)
+    hedge_active = False
+    forecast_order = ordered_ladder + [index for index in range(len(trophies))
+                                       if index not in ladder_indices]
+    for index in forecast_order:
+        family = families[index]
         series = observations[index]
         r_now = series[-1][1] if series else CONFIG["MIN_RATE"]
-        e_now = float(series[-1][2]) if series else 0.0
-
         if family == "always":
-            rate_med = 100.0
+            elasticity_med = 100.0
         elif stale_shape or single_state:
-            rate_med = r_now
+            elasticity_med = r_now
         else:
             raw_gamma, distinct_levels, usable = gammas[index]
             family_gamma = family_medians[family]
@@ -327,27 +368,81 @@ def forecast(case):
                 gamma = min(family_gamma + 0.5, max(family_gamma - 0.5, gamma))
                 if not usable and distinct_levels == 0:
                     gamma = family_gamma
-            rate_med = r_now * (pool_ratio ** (gamma - 1.0))
+            gamma_eff = 1.0 + (gamma - 1.0) * CONFIG["GAMMA_DAMP"]
+            elasticity_med = r_now * (pool_ratio ** (gamma_eff - 1.0))
 
-            if family in ("late", "grind"):
-                parent_index = _story_parent(index, trophies, current_rates)
-                if parent_index is not None:
-                    parent_flow, parent_earners = _parent_flow(states, parent_index)
-                    share = e_now / parent_earners if parent_earners > 0 else 0.0
-                    floor_earners = e_now + CONFIG["PARENT_FLOOR_SHARE"] * share * parent_flow * horizon_hours
-                    rate_med = max(rate_med, 100.0 * floor_earners / max(p_target, 1.0))
+        rate_med = elasticity_med
+        # A frozen pre-refresh page carries no progression evidence at all: the
+        # ladder must not fire on it, or a stale case would forecast a whole
+        # story ladder from a pool that has not even been re-based yet.
+        is_story = index in ladder_indices and not (stale_shape or single_state)
+        is_lagging = False
+        is_hedged_story = False
+        parent_index = None
+        depth = None
+        expected = None
+        if is_story:
+            parent_index, depth = rate_metadata[index]
+            if parent_index is not None:
+                parent_rate = ladder_rate(parent_index)
+                expected = (details[parent_index]["median"] * rung_ratio
+                            * (CONFIG["STORY_DEEP_RATIO"] ** depth))
+                if ladder_rate(index) <= parent_rate:
+                    is_lagging = ladder_rate(index) < 0.25 * expected
+                    if is_lagging:
+                        rate_med = max(rate_med, expected)
+                        hedge_active = True
+                    is_hedged_story = hedge_active
+                    # Rate ordering means this child is no more common than
+                    # the strictly-higher-rate parent.
+                    rate_med = min(rate_med, details[parent_index]["median"])
+                else:
+                    # Defensive path: never drag a more-common rung below its
+                    # elasticity forecast to fit a rarer parent.
+                    rate_med = elasticity_med
+            if family != "always":
+                rate_med = max(CONFIG["MIN_RATE"], _clamp_median(rate_med, r_now))
+        elif family != "always":
+            rate_med = max(CONFIG["MIN_RATE"], _clamp_median(rate_med, r_now))
 
-        rate_med = min(99.5, max(CONFIG["MIN_RATE"], rate_med)) if family != "always" else 100.0
+        rate_med = min(99.5, rate_med) if family != "always" else 100.0
+        if (is_story and parent_index is not None
+                and ladder_rate(index) <= ladder_rate(parent_index)):
+            rate_med = min(rate_med, details[parent_index]["median"])
+            rate_med = max(CONFIG["MIN_RATE"], rate_med)
+        row_sigma = (CONFIG["LAGGING_STORY_SIGMA"] if is_hedged_story
+                     else CONFIG["FAMILY_SIGMA"][family])
         if stale_shape:
-            sigma = CONFIG["FAMILY_SIGMA"][family] * CONFIG["STALE_WIDEN"]
+            sigma = row_sigma * CONFIG["STALE_WIDEN"]
         elif single_state:
-            sigma = CONFIG["FAMILY_SIGMA"][family]
+            sigma = row_sigma
         else:
             sigma = math.sqrt(
-                CONFIG["FAMILY_SIGMA"][family] ** 2
+                row_sigma ** 2
                 + (CONFIG["GAMMA_SIGMA"] * math.log(pool_ratio)) ** 2
                 + (CONFIG["P_SIGMA"] * math.log(pool_ratio)) ** 2
             )
-        results.append(_quantiles(rate_med, sigma, family))
+        row = _quantiles(rate_med, sigma, family)
+        details[index] = {
+            "q": row,
+            "median": rate_med,
+            "sigma": sigma,
+            "family": family,
+            "lagging_story": is_lagging,
+            "hedged_story": is_hedged_story,
+            "story": is_story,
+            "rung_ratio": rung_ratio,
+            "parent_index": parent_index,
+            "parent_id": (_trophy_id(trophies[parent_index])
+                          if parent_index is not None else None),
+            "ladder_depth": depth,
+            "expected_median": expected,
+            "last_rate": ladder_rate(index) if is_story else r_now,
+        }
 
-    return results
+    return details
+
+
+def forecast(case):
+    """Return one five-quantile percent-rate row for each trophy in ``case``."""
+    return [detail["q"] for detail in forecast_with_diagnostics(case)]

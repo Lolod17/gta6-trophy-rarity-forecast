@@ -28,8 +28,11 @@ def iso_time(value):
     return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _clipped_logit(rate):
-    bounded = min(99.9999, max(0.0001, float(rate))) / 100.0
+def _clipped_logit(rate, observed=False):
+    # Observed 0.00% scores as 0.01%; forecast tails below 0.01 remain valid.
+    # 100.00 needs a finite upper endpoint for the logit transform.
+    lower = 0.01 if observed else 1e-12
+    bounded = min(99.99, max(lower, float(rate))) / 100.0
     return math.log(bounded / (1.0 - bounded))
 
 
@@ -72,7 +75,7 @@ def _loss_and_coverage(prediction, truth):
     for index, actual in enumerate(truth):
         if actual is None or index >= len(prediction):
             continue
-        y = _clipped_logit(actual)
+        y = _clipped_logit(actual, observed=True)
         row = prediction[index]
         for tau, quantile in zip(taus, row):
             error = y - _clipped_logit(quantile)

@@ -7,9 +7,13 @@
 ## What it does
 
 This entry forecasts all five requested quantiles (5%, 25%, 50%, 75%, 95%) of each
-trophy's Exophase earn rate at the case target time. Rates and output quantiles are
-percentages of tracked players. The implementation uses Python's standard library
-only and has no network or third-party package dependency.
+trophy's Exophase earn rate at the case target time, in percentages of tracked players.
+It combines deduplicated refresh histories, damped player-pool growth, and
+shrinkage-based trophy elasticities with a story ladder covering IDs 1–13 plus
+chapter, finale, and completion trophies. The ladder is ordered by observed rate, not
+trophy ID, so healthy, more-common trophies keep their forecasts while the lagging
+frontier and rarer rungs receive a wide uncertainty hedge. The implementation uses
+only Python's standard library and has no network or third-party package dependency.
 
 ## Forecast method
 
@@ -24,7 +28,7 @@ only and has no network or third-party package dependency.
 3. **Player pool:** A weighted least-squares fit of `ln(players)` against elapsed
    `ln(hours since launch)` over the most recent six states estimates the pool's
    power-law growth. The nonnegative slope is damped by 0.75, projected to the target,
-   and capped at six times the current pool. This allows rates to dilute as the
+   and capped at five times the current pool. This allows rates to dilute as the
    tracked population grows without extrapolating an unconstrained launch spike.
 4. **Earners and elasticity:** Each printed percentage is inverted to an integer
    earner count by rounding `rate * players / 100` to the nearest integer. On the
@@ -32,25 +36,43 @@ only and has no network or third-party package dependency.
    `d ln(earners) / d ln(players)`; earner counts are floored at 0.5 for the fit.
    A trophy estimate is shrunk toward its current family's median according to the
    number of distinct earner-count levels (up to four), then limited to half a unit
-   either side of that family median. For fewer than three refresh states, elasticity
-   is unavailable and gamma is set to one (pure pool dilution).
-5. **Median and story floor:** The median rate uses the observed rate multiplied by
-   the projected pool ratio to the power `gamma - 1`. For late/grind story trophies
-   among IDs 1–13, the nearest earlier, higher-rate story trophy supplies a
-   progression floor: 35% of the observed earner share times that parent's measured
-   earner flow is added across the horizon. The floor only raises the elasticity
-   forecast; it never replaces a larger one.
-6. **Uncertainty:** Quantiles are normal offsets in logit-rate space. Base family
-   standard deviations are 0.02 / 0.45 / 0.40 / 0.55 / 0.60 for always / early /
-   mid / late / grind. Two additional terms scale with the log projected pool ratio
-   (0.30 for gamma uncertainty and 0.25 for pool uncertainty). A repeated frozen
-   history whose first and last rate vectors match uses persistence for its median
-   and widens the family's base spread by 1.6, allowing for a refresh landing during
-   the forecast window. A single-read case uses persistence and the base family
-   spread because it has no trend evidence.
-   No-history cases return 0.01% at all five
-   quantiles; always-earned trophies return 100% throughout.
+   either side of that family median. The shrunken gamma is damped again toward
+   one: `gamma_eff = 1 + 0.5 * (gamma - 1)`. For fewer than three refresh states,
+   gamma is set to one. The resulting median move is bounded to between one-eighth
+   and eight times the current rate, and the median itself cannot fall below 0.01%.
+5. **Rate-ordered story ladder:** Members are the union of trophy IDs 1–13 and rows
+   whose descriptions contain `Chapter`, `final mission`, `100% Completion`, or
+   `Gone Fishing`. They are sorted by latest observed rate descending, with equal-rate
+   rows ordered by trophy ID. A rung's parent is the nearest strictly higher-rate
+   group; tied children share that parent and advance depth `d` by one per ID-ordered
+   sibling. Rung spacing is estimated from the named story milestones in case order:
+   the median adjacent child/parent rate ratio with parent rate at least 1%, bounded
+   to 0.05–0.60 (0.10 when none qualifies). The expected rate is
+   `parent_forecast_median * rung_ratio * 0.60**d`. A rung is lagging only below 25%
+   of that expectation; its median is `max(elasticity_median, expected)`, otherwise
+   its elasticity median is retained. A child is capped at its parent's forecast
+   median only when its observed rate is no greater than that parent's; a more-common
+   rung is never pulled down. This prevents case/ID order from making healthy trophies
+   such as Trust inherit a rare story rung's forecast. Once the frontier is lagging,
+   that rung and every rarer ladder member—including the platinum and story missions
+   IDs 9–13—use the hedge spread. A higher-rate member such as Trust (ID 8) remains
+   above the frontier and keeps its band spread. Non-ladder trophies retain their own
+   elasticity forecast.
+6. **Uncertainty:** Quantiles are normal offsets in logit-rate space. The row sigma
+   is 0.02 for always, 0.35 for early, 0.45 for mid, 0.70 for late, and 0.80 for
+   non-story grind trophies. Every lagging ladder rung and every rarer member below
+   the first lagging rung uses the 1.40 hedge; the platinum is at the rare end of the
+   rate-sorted ladder and receives that spread when the frontier reaches it. Rungs
+   above the frontier keep their family-band sigma. The two pool/gamma terms are added
+   in quadrature using 0.30 and 0.25 times the log projected pool ratio. The story
+   hedge gives the unobserved progression frontier
+   wide tails instead of presenting the frozen 0.02% rate as certain. A repeated frozen
+   history uses persistence as the elasticity median and multiplies its row sigma by
+   1.6; story anchors can still raise lagging rungs. A one-state history uses
+   persistence and the row sigma without trend terms. No
+   history returns 0.01% at all quantiles; always-earned trophies return 100%.
 
+The median is floored at 0.01%; the logit-space quantile tails may fall below 0.01%.
 The output is clamped to [0, 100], made nondecreasing, and rounded half-up to four
 decimal places. The parameters are centralized in `CONFIG` in `model.py`.
 
@@ -75,7 +97,9 @@ The rolling-origin validator accepts JSONL page reads, reports mean pinball loss
 the logit scale and interval coverage, and compares the forecaster with persistence.
 Its persistence benchmark holds the last observed rate and uses a logit-space
 random-walk standard deviation of `0.25 * sqrt(horizon_days)` (always trophies remain
-at 100%). Only origins with an observed read in `[target, target + 1 hour)` are scored.
+at 100%). Observed 0.00% is scored as 0.01%; the backtest caps 100.00% at 99.99%
+for a finite logit. Forecast tails below 0.01% remain unclipped. Only origins with an
+observed read in `[target, target + 1 hour)` are scored.
 
 ```sh
 python3 tools/backtest.py --reads /path/to/reads.jsonl
@@ -90,21 +114,21 @@ For `--case`, the answer JSON supplies actual percentages in a `rates` array (or
 
 Measured with the supplied live recording using
 `python3 tools/backtest.py --reads /Users/mac/makefun-ops/gta6-forecast-data/reads.jsonl`.
-That file currently has 10 polls spanning 88 minutes, but they all contain the same
-page state (one collapsed refresh state); the 10 reads therefore provide only a very
-small, highly dependent check. With the default 10-minute cut step, there are six
-rolling origins. Four had a usable target read at 30 minutes and two at 60 minutes;
+That file currently has 12 polls spanning 108 minutes, but they all contain the same
+page state (one collapsed refresh state), so this is only a very small, highly
+dependent check. With the default 10-minute cut step, there are eight rolling origins.
+Five had a usable target read at 30 minutes, three at 60 minutes, and one at 90 minutes;
 there are no observed outcomes for the longer horizons. Values below are the actual
 tool output, not an out-of-sample performance claim:
 
 | Model | Horizon (min) | N cases | Mean pinball loss | 90% coverage |
 |---|---:|---:|---:|---:|
-| Persistence | 30 | 4 | 0.269404 | 85.5% |
-| This model | 30 | 4 | 0.290772 | 85.5% |
-| Persistence | 60 | 2 | 0.269868 | 85.5% |
-| This model | 60 | 2 | 0.288446 | 85.5% |
-| Persistence | 90 | 0 | n/a | n/a |
-| This model | 90 | 0 | n/a | n/a |
+| Persistence | 30 | 5 | 0.003553 | 100.0% |
+| This model | 30 | 5 | 0.166034 | 97.8% |
+| Persistence | 60 | 3 | 0.005025 | 100.0% |
+| This model | 60 | 3 | 0.161012 | 97.6% |
+| Persistence | 90 | 1 | 0.006155 | 100.0% |
+| This model | 90 | 1 | 0.135899 | 96.4% |
 | Persistence | 360 | 0 | n/a | n/a |
 | This model | 360 | 0 | n/a | n/a |
 | Persistence | 1440 | 0 | n/a | n/a |
@@ -112,6 +136,7 @@ tool output, not an out-of-sample performance claim:
 | Persistence | 6510 | 0 | n/a | n/a |
 | This model | 6510 | 0 | n/a | n/a |
 
-The capture ends before any 90-minute-or-longer target can be checked, so it cannot
-validate the competition's 6,510-minute forecast. The close persistence comparison is
-expected for a recording with no observed refresh transition.
+The capture ends before any 360-minute-or-longer target can be checked, so it cannot
+validate the competition's 6,510-minute forecast. This small one-state recording scores
+the model worse than persistence; because its polls and target outcomes are highly
+dependent, it is only a smoke test and cannot establish comparative performance.
