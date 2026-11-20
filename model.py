@@ -15,11 +15,13 @@ CONFIG = {
     "GAMMA_SIGMA": 0.30,
     "P_SIGMA": 0.25,
     "STALE_WIDEN": 1.6,
+    "EARNER_DAMP": 0.7,
+    "EARNER_DAMP_CAP": 3.0,
     "FAMILY_SIGMA": {
         "always": 0.02,
-        "early": 0.35,
-        "mid": 0.45,
-        "late": 0.70,
+        "early": 0.60,
+        "mid": 0.55,
+        "late": 0.75,
         "grind": 0.80,
     },
     "LAGGING_STORY_SIGMA": 1.40,
@@ -277,6 +279,26 @@ def _clamp_median(rate_med, r_now):
     return min(upper, max(lower, rate_med))
 
 
+def _earner_time_slope(series):
+    """Power-law slope of earner count against hours since launch.
+
+    ``series`` is [(state, rate, earners), ...] in time order. Earners are floored
+    at 0.5 so a trophy that has not been earned yet still yields a usable fit.
+    """
+    points = []
+    for state, _rate, earned in series[-max(1, int(CONFIG["RECENT_G"])):]:
+        if earned is None or state["t"] <= 0.0:
+            continue
+        points.append((math.log(max(state["t"], 1.0 / 60.0)),
+                       math.log(max(float(earned), 0.5)),
+                       1.0))
+    if len(points) < 2:
+        return 0.0
+    # Recency weights grow 25% per observation, matching the other fits.
+    weighted = [(x, y, 1.25 ** position) for position, (x, y, _w) in enumerate(points)]
+    return _weighted_slope(weighted)
+
+
 def _quantiles(rate_med, sigma, family):
     if family == "always":
         return [100.0] * 5
@@ -302,6 +324,11 @@ def forecast_with_diagnostics(case):
     families = [_family(rate) for rate in current_rates]
     p_now, p_target = _pool_forecast(states, case.get("at"), case.get("target"))
     pool_ratio = max(1.0, p_target / max(p_now, 1.0))
+    try:
+        t_now = _hours_since_launch(case.get("at"))
+        t_ratio = max(1.0, _hours_since_launch(case.get("target")) / max(t_now, 1.0 / 60.0))
+    except (AttributeError, TypeError):
+        t_ratio = 1.0
 
     gammas, family_medians = _gamma_estimates(states, families)
     raw_history = case.get("history", [])
@@ -370,6 +397,15 @@ def forecast_with_diagnostics(case):
                     gamma = family_gamma
             gamma_eff = 1.0 + (gamma - 1.0) * CONFIG["GAMMA_DAMP"]
             elasticity_med = r_now * (pool_ratio ** (gamma_eff - 1.0))
+            # Second, independent estimator: earners accumulate with calendar
+            # time (players progressing) while the pool dilutes the rate. The
+            # pool-elasticity view cannot see progression once the pool stalls,
+            # so blend the two views geometrically.
+            b_slope = _earner_time_slope(series)
+            b_eff = min(max(b_slope, 0.0), CONFIG["EARNER_DAMP_CAP"]) * CONFIG["EARNER_DAMP"]
+            if t_ratio > 0.0 and p_target > 0.0:
+                earner_med = r_now * (t_ratio ** b_eff) * (p_now / p_target)
+                elasticity_med = math.sqrt(max(elasticity_med, 0.0) * max(earner_med, 0.0))
 
         rate_med = elasticity_med
         # A frozen pre-refresh page carries no progression evidence at all: the

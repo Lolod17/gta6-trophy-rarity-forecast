@@ -67,8 +67,9 @@ only Python's standard library and has no network or third-party package depende
    in quadrature using 0.30 and 0.25 times the log projected pool ratio. The story
    hedge gives the unobserved progression frontier
    wide tails instead of presenting the frozen 0.02% rate as certain. A repeated frozen
-   history uses persistence as the elasticity median and multiplies its row sigma by
-   1.6; story anchors can still raise lagging rungs. A one-state history uses
+   history uses persistence as the elasticity median, multiplies its row sigma by
+   1.6, and skips the ladder entirely: a page that has not refreshed carries no
+   progression evidence, so there is no frontier to anchor on. A one-state history uses
    persistence and the row sigma without trend terms. No
    history returns 0.01% at all quantiles; always-earned trophies return 100%.
 

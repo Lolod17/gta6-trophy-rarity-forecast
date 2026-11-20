@@ -165,7 +165,7 @@ def main():
         median = details_by_id[trophy_id]["median"]
         assert 0.9 * rate <= median <= 1.1 * rate, \
             "healthy story/side rung %d moved too far from its observed rate" % trophy_id
-        assert details_by_id[trophy_id]["sigma"] < 0.6
+        assert details_by_id[trophy_id]["sigma"] < 0.7
     assert details_by_id[5]["lagging_story"], "Chapter 3 was not detected as lagging"
     assert all(details_by_id[trophy_id]["hedged_story"]
                and details_by_id[trophy_id]["sigma"] >= model.CONFIG["LAGGING_STORY_SIGMA"]
