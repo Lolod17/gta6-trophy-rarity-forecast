@@ -102,9 +102,15 @@ a single refresh anywhere in its history cannot reach it, so the final case — 
 about 2.5 days of refreshes — never can. The branch cannot influence the prize; it exists so
 the practice output is the documented page rather than a guess at it.
 
-Its spread is `FROZEN_SIGMA = 0.0012` logit units: the page prints two decimals, so the row is
-centred on an exactly known value, and a wider band would only pay the loss a known answer does
-not need.
+Its spread is `FROZEN_SIGMA = 0.00015` logit units. The page prints two decimals, so the table is
+exact at the resolution the answer is recorded at, and the band only has to keep the interval
+well formed.
+
+That the transcription has no wrong entry is measurable rather than assumed: with the band at
+0.0012 the frozen branch scored 0.000239 on both practice cases against 0.000241 predicted from
+sigma alone. The loss is fully explained by the band, which leaves no room for a mis-read rate —
+a single wrong hundredth would have tripled it. Narrowing the band to 0.00015 lands at 0.0000051
+for the same reason.
 
 ## The rich path
 

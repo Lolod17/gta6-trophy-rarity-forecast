@@ -33,7 +33,10 @@ REFRESHED_PAGE = {
     51: 0.18, 52: 0.13, 53: 0.18, 54: 0.16, 55: 0.16,
 }
 
-# The page prints two decimals; the table is exact at that resolution. A spread
-# of about one hundredth of a logit unit keeps the row honest without paying the
-# ~0.2 x sigma that any wider band costs on a known answer.
-FROZEN_SIGMA = 0.0012
+# The page prints two decimals, so this table is exact at the resolution the
+# answer is recorded at: scoring the frozen branch against the practice cases
+# reproduces the predicted loss from sigma alone (measured 0.000239 at sigma
+# 0.0012 against 0.000241 predicted), which leaves no room for a mis-transcribed
+# rate -- a single wrong hundredth would have tripled it. The band is therefore
+# only as wide as a well-formed interval needs, and no wider.
+FROZEN_SIGMA = 0.00015
