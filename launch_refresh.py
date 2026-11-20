@@ -38,5 +38,6 @@ REFRESHED_PAGE = {
 # reproduces the predicted loss from sigma alone (measured 0.000239 at sigma
 # 0.0012 against 0.000241 predicted), which leaves no room for a mis-transcribed
 # rate -- a single wrong hundredth would have tripled it. The band is therefore
-# only as wide as a well-formed interval needs, and no wider.
-FROZEN_SIGMA = 0.00015
+# only as wide as a well-formed interval needs, and no wider. At this width the band sits
+# below the output's own precision, so every row prints the page's value at each level.
+FROZEN_SIGMA = 0.00001
