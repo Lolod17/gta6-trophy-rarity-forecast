@@ -15,6 +15,7 @@ CONFIG = {
     "GAMMA_SIGMA": 0.30,
     "P_SIGMA": 0.25,
     "STALE_WIDEN": 1.6,
+    "STALE_DILUTION": 0.41,
     "EARNER_DAMP": 0.7,
     "EARNER_DAMP_CAP": 3.0,
     "FAMILY_SIGMA": {
@@ -382,7 +383,16 @@ def forecast_with_diagnostics(case):
         r_now = series[-1][1] if series else CONFIG["MIN_RATE"]
         if family == "always":
             elasticity_med = 100.0
-        elif stale_shape or single_state:
+        elif stale_shape:
+            # A frozen page is a stale sample, not a settled population: Exophase
+            # re-bases the tracked pool on its next refresh, and every rate moves
+            # with the new denominator. Forecast the geometric midpoint between
+            # "no re-base" and the one re-base the recording shows (launch night
+            # multiplied the pool ~6x, so the fully diluted row would be ~1/6 of
+            # the stale rate): STALE_DILUTION = sqrt(1 * 1/6) ~= 0.41, kept as a
+            # prior because the case carries no evidence of the next denominator.
+            elasticity_med = r_now * CONFIG["STALE_DILUTION"]
+        elif single_state:
             elasticity_med = r_now
         else:
             raw_gamma, distinct_levels, usable = gammas[index]

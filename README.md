@@ -67,10 +67,13 @@ only Python's standard library and has no network or third-party package depende
    in quadrature using 0.30 and 0.25 times the log projected pool ratio. The story
    hedge gives the unobserved progression frontier
    wide tails instead of presenting the frozen 0.02% rate as certain. A repeated frozen
-   history uses persistence as the elasticity median, multiplies its row sigma by
-   1.6, and skips the ladder entirely: a page that has not refreshed carries no
-   progression evidence, so there is no frontier to anchor on. A one-state history uses
-   persistence and the row sigma without trend terms. No
+   history is treated as a stale sample rather than a settled population: its median is
+   the stale rate re-based by `STALE_DILUTION` 0.41 (the geometric midpoint between "no
+   refresh" and the one re-base the recording shows, launch night multiplying the tracked
+   pool ~6x), its row sigma is multiplied by 1.6, and the ladder is skipped entirely —
+   a page that has not refreshed carries no progression evidence, so there is no frontier
+   to anchor on. A one-state history keeps persistence with the row sigma and no trend
+   terms. No
    history returns 0.01% at all quantiles; always-earned trophies return 100%.
 
 The median is floored at 0.01%; the logit-space quantile tails may fall below 0.01%.
