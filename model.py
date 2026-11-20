@@ -20,7 +20,7 @@ CONFIG = {
     "P_SIGMA": 0.25,
     "STALE_WIDEN": 1.6,
     "STALE_DILUTION": 0.41,
-    "EARNER_DAMP": 0.7,
+    "EARNER_DAMP": 1.0,
     "EARNER_DAMP_CAP": 3.0,
     "FAMILY_SIGMA": {
         "always": 0.02,
